@@ -4,7 +4,13 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 add_library(warpsim_core src/sim.cpp)
 target_include_directories(warpsim_core PUBLIC include)
+
 add_executable(test_v0 tests/test_v0.cpp)
 target_link_libraries(test_v0 PRIVATE warpsim_core)
+
+add_executable(test_v1 tests/test_v1.cpp)
+target_link_libraries(test_v1 PRIVATE warpsim_core)
+
 enable_testing()
 add_test(NAME v0 COMMAND test_v0)
+add_test(NAME v1 COMMAND test_v1)
