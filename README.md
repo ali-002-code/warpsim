@@ -86,9 +86,50 @@ only after its validation test passed:
 - v2: per-lane addresses + coalescing + set-associative L1
 - v3: outstanding-request limit + DRAM bandwidth
 
-## Experiments (in progress)
+## Experiments
 
-Parameter sweeps with Python plots, each paired with its analytical prediction:
-occupancy vs latency hiding, execution width, L1 capacity, and outstanding-request /
-bandwidth limits across compute- and memory-bound workloads. This section will hold
-the generated graphs and the predicted-vs-measured comparison for each.
+Each experiment sweeps one architectural parameter and overlays the measured IPC on a
+closed-form prediction derived by hand. The measured points sit on the predicted curve
+in every case, which is the evidence that the model reflects the intended mechanism
+rather than an artifact of its parameters.
+
+### Occupancy and latency hiding
+
+![occupancy](results/occupancy.png)
+
+A dependent-instruction workload run with increasing resident warps. A single warp
+stalls on its own dependencies and reaches only IPC = 1/L. Adding warps lets the
+scheduler issue from other warps during those stalls, so throughput climbs and then
+saturates once the single issue slot is full. Prediction: IPC -> min(1, W/L). The knee
+sits exactly at W = L, which is the number of warps needed to fully hide the latency.
+
+### Memory-level parallelism (Little's Law)
+
+![mshr](results/mshr.png)
+
+A streaming (memory-bound) workload with the L1 disabled, sweeping the number of
+permitted outstanding memory requests (MSHRs). Throughput rises linearly with
+in-flight requests, matching Little's Law (throughput = concurrency / latency = M/W),
+until the memory channel itself saturates. The ceiling here is one access per cycle,
+a consequence of the simplified serialised-channel bandwidth model; a multi-issue
+channel would raise it. This is the mechanism behind keeping many warps resident on
+real GPUs: latency hiding is bounded by the outstanding-request limit.
+
+### Bottleneck identification
+
+![execution width](results/execwidth.png)
+
+The same knob (FP execution latency) applied to two workloads. The latency-bound
+dependent chain responds directly (IPC = 1/L), while the memory-bound stream is
+unaffected because its bottleneck is memory, not compute. This is the core
+performance-analysis skill the simulator is built to demonstrate: adding execution
+resources helps only when execution is actually the bottleneck.
+
+## Note on the GEMM workload and cache experiments
+
+The bundled "gemm" workload is a compute-heavy instruction mix, not a tiled matrix
+multiply with genuine data reuse. As a result the workloads here have little temporal
+locality, so an L1-capacity sweep would (correctly) show almost no sensitivity to cache
+size. Rather than construct an artificial reuse pattern to force a curve, this is left
+as noted: cache-capacity effects require a workload with real reuse, which is future
+work.
