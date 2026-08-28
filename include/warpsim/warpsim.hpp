@@ -23,6 +23,7 @@ struct GPUConfig {
     int line_bytes  = 128;
     int memory_latency = 300;   // L1 miss -> DRAM, in cycles
     int max_outstanding = 32;   // MSHRs: max in-flight DRAM requests (v3a)
+    int dram_txns_per_cycle = 4;   // DRAM bandwidth: line-transactions/cycle (v3b)
 
     // L1 cache (v2b)
     bool l1_enabled   = true;

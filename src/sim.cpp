@@ -43,6 +43,7 @@ RunResult run_sm(const std::vector<Instruction>& program,
 
     // MSHR pool (per-SM, shared across warps): slot i is free when free_at[i] <= cycle.
     std::vector<long> mshr_free_at((size_t)std::max(1, config.max_outstanding), 0);
+    long dram_free_at = 0;   // memory system busy until this cycle (bandwidth serialisation)
 
     long current_cycle = 0, max_completion = 0, issued_total = 0;
     const long target = (long)program.size() * num_warps;
@@ -85,6 +86,10 @@ RunResult run_sm(const std::vector<Instruction>& program,
                         for (size_t m = 0; m < mshr_free_at.size(); ++m)
                             if (mshr_free_at[m] <= current_cycle) { free_slot = (int)m; break; }
                         if (free_slot < 0) continue;     // structural stall: no MSHR free
+                        if (dram_free_at > current_cycle) continue;   // bandwidth stall: memory system busy
+                        long need = coalesce_transactions(inst.addr_base, inst.addr_stride, config.warp_size, config.line_bytes);
+                        long drain = (need + config.dram_txns_per_cycle - 1) / config.dram_txns_per_cycle;
+                        dram_free_at = current_cycle + drain;   // reserve memory system for drain cycles
                         mshr_free_at[(size_t)free_slot] = current_cycle + config.memory_latency;
                         if (l1) { l1->access(line); ++r.l1_misses; }  // commit insert now
                         lat = config.memory_latency;
