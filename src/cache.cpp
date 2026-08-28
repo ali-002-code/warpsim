@@ -11,26 +11,21 @@ Cache::Cache(int total_bytes, int line_bytes, int associativity)
     ways_.assign(static_cast<size_t>(num_sets_), {});
 }
 
+bool Cache::probe(long addr) const {
+    long line = line_addr(addr);
+    const auto& w = ways_[static_cast<size_t>(set_of(line))];
+    return std::find(w.begin(), w.end(), line) != w.end();
+}
+
 bool Cache::access(long addr) {
     long line = line_addr(addr);
-    int set = set_of(line);
-    auto& w = ways_[static_cast<size_t>(set)];
-
+    auto& w = ways_[static_cast<size_t>(set_of(line))];
     auto it = std::find(w.begin(), w.end(), line);
     if (it != w.end()) {
-        // Hit: promote to most-recently-used (move to back).
-        w.erase(it);
-        w.push_back(line);
-        ++hits_;
-        return true;
+        w.erase(it); w.push_back(line); ++hits_; return true;
     }
-
-    // Miss: evict LRU (front) if the set is full, then insert at back.
-    if (static_cast<int>(w.size()) >= assoc_)
-        w.erase(w.begin());
-    w.push_back(line);
-    ++misses_;
-    return false;
+    if (static_cast<int>(w.size()) >= assoc_) w.erase(w.begin());
+    w.push_back(line); ++misses_; return false;
 }
 
 }  // namespace warpsim

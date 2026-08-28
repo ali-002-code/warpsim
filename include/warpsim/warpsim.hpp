@@ -22,6 +22,7 @@ struct GPUConfig {
     int warp_size   = 32;
     int line_bytes  = 128;
     int memory_latency = 300;   // L1 miss -> DRAM, in cycles
+    int max_outstanding = 32;   // MSHRs: max in-flight DRAM requests (v3a)
 
     // L1 cache (v2b)
     bool l1_enabled   = true;

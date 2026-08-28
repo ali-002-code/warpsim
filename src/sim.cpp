@@ -10,7 +10,7 @@ static int arith_latency(Op op, const GPUConfig& cfg) {
     switch (op) {
         case Op::IADD: return cfg.int_latency;
         case Op::NOP:  return 0;
-        case Op::LOAD: case Op::STORE: return 0;  // handled via mem path
+        case Op::LOAD: case Op::STORE: return 0;  // memory handled separately
         default:       return cfg.fp_latency;
     }
 }
@@ -22,21 +22,6 @@ long coalesce_transactions(long base, int stride, int warp_size, int line_bytes)
     return (long)lines.size();
 }
 
-// v2b: resolve one memory access to a latency via the L1.
-// Simplification (documented): the access hits-or-misses as a whole, keyed on
-// its base line. Per-line splitting of a coalesced access is deferred to v3,
-// where transaction COUNT (bandwidth/MSHR) is what makes that distinction bite.
-static int mem_latency(const Instruction& inst, const GPUConfig& cfg,
-                       Cache* l1, RunResult& r) {
-    long base_line_addr = inst.addr_base;  // byte addr of lane 0
-    if (cfg.l1_enabled && l1) {
-        bool hit = l1->access(base_line_addr);
-        if (hit) { ++r.l1_hits;   return cfg.l1_hit_latency; }
-        else     { ++r.l1_misses; return cfg.memory_latency; }
-    }
-    return cfg.memory_latency;
-}
-
 static long mem_txn(const Instruction& inst, const GPUConfig& cfg) {
     if (inst.op != Op::LOAD && inst.op != Op::STORE) return 0;
     return coalesce_transactions(inst.addr_base, inst.addr_stride,
@@ -44,41 +29,6 @@ static long mem_txn(const Instruction& inst, const GPUConfig& cfg) {
 }
 
 static bool is_mem(Op op) { return op == Op::LOAD || op == Op::STORE; }
-
-RunResult run_single_warp(const std::vector<Instruction>& program,
-                          const GPUConfig& config, int num_registers) {
-    std::vector<long> ready((size_t)num_registers, 0);
-    std::unique_ptr<Cache> l1 =
-        config.l1_enabled
-            ? std::make_unique<Cache>(config.l1_bytes, config.line_bytes, config.l1_assoc)
-            : nullptr;
-
-    long current_cycle = 0, max_completion = 0;
-    size_t pc = 0;
-    RunResult r;
-
-    while (pc < program.size()) {
-        const Instruction& inst = program[pc];
-        bool eligible = true;
-        for (int s : inst.src)
-            if (s >= 0 && ready[s] > current_cycle) { eligible = false; break; }
-
-        if (eligible) {
-            int lat = is_mem(inst.op) ? mem_latency(inst, config, l1.get(), r)
-                                      : arith_latency(inst.op, config);
-            long completion = current_cycle + lat;
-            if (inst.dst >= 0) ready[inst.dst] = completion;
-            max_completion = std::max(max_completion, completion);
-            r.memory_transactions += mem_txn(inst, config);
-            ++pc;
-        }
-        ++current_cycle;
-    }
-
-    r.total_cycles = max_completion;
-    r.instructions_issued = (long)program.size();
-    return r;
-}
 
 RunResult run_sm(const std::vector<Instruction>& program,
                  const GPUConfig& config, int num_warps, int num_registers) {
@@ -90,6 +40,9 @@ RunResult run_sm(const std::vector<Instruction>& program,
         config.l1_enabled
             ? std::make_unique<Cache>(config.l1_bytes, config.line_bytes, config.l1_assoc)
             : nullptr;
+
+    // MSHR pool (per-SM, shared across warps): slot i is free when free_at[i] <= cycle.
+    std::vector<long> mshr_free_at((size_t)std::max(1, config.max_outstanding), 0);
 
     long current_cycle = 0, max_completion = 0, issued_total = 0;
     const long target = (long)program.size() * num_warps;
@@ -110,8 +63,36 @@ RunResult run_sm(const std::vector<Instruction>& program,
                     if (s >= 0 && w.ready[s] > current_cycle) { eligible = false; break; }
                 if (!eligible) continue;
 
-                int lat = is_mem(inst.op) ? mem_latency(inst, config, l1.get(), r)
-                                          : arith_latency(inst.op, config);
+                int lat;
+                if (is_mem(inst.op)) {
+                    long line = inst.addr_base;
+                    bool needs_dram;
+                    if (l1) {
+                        if (l1->probe(line)) {          // L1 hit: no DRAM, no MSHR
+                            l1->access(line);            // commit LRU promote
+                            ++r.l1_hits;
+                            lat = config.l1_hit_latency;
+                            needs_dram = false;
+                        } else {
+                            needs_dram = true;           // miss: don't commit yet
+                        }
+                    } else {
+                        needs_dram = true;               // no L1: always a DRAM request
+                    }
+
+                    if (needs_dram) {
+                        int free_slot = -1;
+                        for (size_t m = 0; m < mshr_free_at.size(); ++m)
+                            if (mshr_free_at[m] <= current_cycle) { free_slot = (int)m; break; }
+                        if (free_slot < 0) continue;     // structural stall: no MSHR free
+                        mshr_free_at[(size_t)free_slot] = current_cycle + config.memory_latency;
+                        if (l1) { l1->access(line); ++r.l1_misses; }  // commit insert now
+                        lat = config.memory_latency;
+                    }
+                } else {
+                    lat = arith_latency(inst.op, config);
+                }
+
                 long completion = current_cycle + lat;
                 if (inst.dst >= 0) w.ready[inst.dst] = completion;
                 max_completion = std::max(max_completion, completion);
@@ -128,6 +109,11 @@ RunResult run_sm(const std::vector<Instruction>& program,
     r.total_cycles = max_completion;
     r.instructions_issued = issued_total;
     return r;
+}
+
+RunResult run_single_warp(const std::vector<Instruction>& program,
+                          const GPUConfig& config, int num_registers) {
+    return run_sm(program, config, 1, num_registers);   // one warp == single-warp
 }
 
 }  // namespace warpsim
