@@ -19,3 +19,7 @@ add_test(NAME v0 COMMAND test_v0)
 add_test(NAME v1 COMMAND test_v1)
 add_test(NAME v2 COMMAND test_v2)
 add_test(NAME cache COMMAND test_cache)
+
+add_executable(test_v2b tests/test_v2b.cpp)
+target_link_libraries(test_v2b PRIVATE warpsim_core)
+add_test(NAME v2b COMMAND test_v2b)
